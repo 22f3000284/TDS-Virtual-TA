@@ -1,3 +1,19 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "argparse",
+#     "fastapi",
+#     "httpx",
+#     "markdownify",
+#     "numpy",
+#     "semantic_text_splitter",
+#     "tqdm",
+#     "uvicorn",
+#     "google-genai",
+#     "pillow",
+#     "sentence_transformers",
+# ]
+# ///
 import numpy as np
 import os
 from pathlib import Path
