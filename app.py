@@ -9,9 +9,10 @@
 #     "semantic_text_splitter",
 #     "tqdm",
 #     "uvicorn",
-#     "google-genai",
+#     "google.generativeai",
 #     "pillow",
-#     "sentence_transformers",
+#     "openai",
+#     "pydantic",
 # ]
 # ///
 import numpy as np
@@ -21,12 +22,10 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from openai import OpenAI
 import time
-from sentence_transformers import SentenceTransformer
+import google.generativeai as genai
 import base64
 
 app = FastAPI()
-
-model = SentenceTransformer("all-MiniLM-L6-v2") 
 
 class RateLimiter:
     def __init__(self, requests_per_minute=60, requests_per_second=2):
@@ -83,9 +82,21 @@ def get_image_description(image_data):
     
     return response.choices[0].message.content
 
-def get_embedding(text: str) -> list[float]:
-    """Generate embedding using sentence-transformers."""
-    return model.encode(text).tolist()
+def get_embedding(text: str, max_retries: int = 3) -> list[float]:
+    for attempt in range(max_retries):
+        try:
+            rate_limiter.wait_if_needed()
+            response = genai.embed_content(
+                model="models/embedding-001",
+                content=text,
+                task_type="retrieval_document"
+            )
+            return response["embedding"]
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {e}, retrying...")
+            time.sleep(2 ** attempt)
+    raise Exception("Failed to get embedding after retries.")
+
 
 def load_embeddings():
     """Load chunks and embeddings from npz file"""
@@ -98,7 +109,7 @@ def generate_llm_response(question: str, context: str):
     system_prompt = """You are a concise teaching assistant. Answer briefly using only the information from the context.
 Use Markdown formatting.
 Keep responses under 100 words.
-If there's not enough information, reply with: `I don't know`
+if the context does not contain enough information to answer the question, respond with "I don't know"
 Do not attempt to guess, fabricate, or add external information.
 """
     response = client.chat.completions.create(

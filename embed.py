@@ -1,15 +1,63 @@
+import hashlib
+import httpx
+import json
 import numpy as np
+import os
 import time
 from pathlib import Path
-from tqdm import tqdm
-from sentence_transformers import SentenceTransformer
 from semantic_text_splitter import MarkdownSplitter
+from tqdm import tqdm
+import google.generativeai as genai
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
 
-def get_embedding(text: str) -> list[float]:
-    embedding = model.encode(text)
-    return embedding.tolist()
+class RateLimiter:
+    def __init__(self, requests_per_minute=60, requests_per_second=2):
+        self.requests_per_minute = requests_per_minute
+        self.requests_per_second = requests_per_second
+        self.request_times = []
+        self.last_request_time = 0
+    
+    def wait_if_needed(self):
+        current_time = time.time()
+        
+        # Per-second rate limiting
+        time_since_last = current_time - self.last_request_time
+        if time_since_last < (1.0 / self.requests_per_second):
+            sleep_time = (1.0 / self.requests_per_second) - time_since_last
+            time.sleep(sleep_time)
+        
+        # Per-minute rate limiting
+        current_time = time.time()
+        self.request_times = [t for t in self.request_times if current_time - t < 60]
+        
+        if len(self.request_times) >= self.requests_per_minute:
+            sleep_time = 60 - (current_time - self.request_times[0])
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                # Clean up old requests after sleeping
+                current_time = time.time()
+                self.request_times = [t for t in self.request_times if current_time - t < 60]
+        
+        self.request_times.append(current_time)
+        self.last_request_time = current_time
+
+rate_limiter = RateLimiter(requests_per_minute=5, requests_per_second=2)
+
+
+def get_embedding(text: str, max_retries: int = 3) -> list[float]:
+    for attempt in range(max_retries):
+        try:
+            rate_limiter.wait_if_needed()
+            response = genai.embed_content(
+                model="models/embedding-001",
+                content=text,
+                task_type="retrieval_document"
+            )
+            return response["embedding"]
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {e}, retrying...")
+            time.sleep(2 ** attempt)
+    raise Exception("Failed to get embedding after retries.")
 
 
 def get_chunks(file_path: str, chunk_size: int = 15000):
@@ -18,17 +66,21 @@ def get_chunks(file_path: str, chunk_size: int = 15000):
     splitter = MarkdownSplitter(chunk_size)
     chunks = splitter.chunks(content)
     return chunks
+
 if __name__ == "__main__":
+    # files stores all markdown files in the "markdowns" directory
     files = [*Path("markdowns").glob("*.md"), *Path("markdowns").rglob("*.md")]
     all_chunks = []
     all_embeddings = []
     total_chunks = 0
     file_chunks = {}
+    # Getting chinks from all markdown files and store in file_chunks with filepath as key and chuck as value
     for file_path in files:
         chunks = get_chunks(file_path)
         file_chunks[file_path] = chunks
         total_chunks += len(chunks)
 
+    # for the chunks get embeddings and store them in all_embeddings 
     with tqdm(total=total_chunks, desc="Processing embeddings") as pbar:
         for file_path, chunks in file_chunks.items():
             for chunk in chunks:
@@ -42,8 +94,11 @@ if __name__ == "__main__":
                     print(f"Skipping chunk from {file_path.name} due to error: {e}")
                     pbar.update(1)
                     continue
-    np.savez("embeddings.npz", chunks=all_chunks, embeddings=all_embeddings)
-    test_path = Path("markdowns/discourse/thread1.md")
-    chunks = get_chunks(test_path, chunk_size=1000)
-    embedding = get_embedding(chunks[0])
-    print("Embedding vector length:", len(embedding))
+    
+    # save all the embeddings and chunks to a numpy archive file
+    np.savez("embeddings2.npz", chunks=all_chunks, embeddings=all_embeddings)
+
+    file_path = ("markdowns/discourse/thread1.md")
+    chunks = get_chunks(file_path, chunk_size=1000)
+    embedding = get_embedding(chunks[0])    
+    print(len(embedding))
